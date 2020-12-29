@@ -1,6 +1,10 @@
+from __future__ import print_function
+
 import seren3
 import numpy as np
 from seren3.array import SimArray
+from seren3.core.snapshot import Family
+from pymses.utils.regions import Sphere
 
 def M_to_R(m, f, cosmo):
     """Converts from a halo mass defined as f wrt the critical density
@@ -30,11 +34,6 @@ def M_to_R(m, f, cosmo):
     # H(z) = H0 * E(z)
     # rho_crit(z) = rho_crit(0) * E(z)**2
     
-    # FIXME this doesn't work in this instance for some reason, e_z
-    # throws an error
-    # z is a kwarg in **cosmo
-
-    print(cosmo)
     rho_crit, _ = cosmo_densities(**cosmo)
     E_z = e_z(**cosmo)
     rho_crit_z = rho_crit * E_z**2
@@ -51,6 +50,100 @@ def M_to_R(m, f, cosmo):
     return r
 
 
+def get_pos(h):
+    """Gets the halo position in code units (i.e. [0., 1.])
+
+    :param h: (Halo) halo object
+    :returns: halo position in code units
+    :rtype: (array)
+
+    """
+
+    return h.pos.view(type=np.ndarray)
+
+
+def get_r(R, h):
+    """Converts a radius R from comoving kpc into code units 
+    (i.e. [0., 1.])
+
+    Test (for get_pos, too)
+
+        pos_s, r_s = h.pos_r_code_units
+        print('---- calc:', t_Rvir_rs * 1e-3 * subsnap.cosmo['h'] / 
+               float(h.boxsize))
+        print('---- me:', pos, r)
+        print('---- rs:', pos_s, r_s)
+
+    :param R: (float) radius in comoving kpc (i.e. a * kpc)
+    :param h: (Halo) halo object
+    :returns: halo radius in code units
+    :rtype: (float)
+
+    """
+    
+    boxsize = h.boxsize * 1e3 / h.base.cosmo['h']  # comoving kpc
+    
+    return float(R / boxsize)
+
+
+def get_sphere(R, h):
+    """Gives a spherical filter centred on the halo h, with a radius of
+    R (in comoving kpc)
+
+    :param R: (float) radius in comoving kpc (i.e. a * kpc)
+    :param h: (Halo) halo object
+
+    :returns: halo radius in code units
+
+    :rtype: (float)
+    """
+    # Radius and position of haloes in code units
+    r = get_r(R, h)
+    pos = get_pos(h)
+
+    return Sphere(pos, r)
+
+
+def get_masses(snap, R, h):
+    """Returns the dark matter, gas and stellar mass (in Msol) of the halo h
+    within the radius R (in comoving kpc)
+
+    :param snap: (Snapshot) snapshot object containing the relevant
+        dark matter, gas and stellar fields
+    :param R: (float) radius within which to calculate the mass
+    :param h: (Halo) halo object
+
+    :returns: dark matter, gas and stellar halo mass (in Msol)
+
+    :rtype: (float, float, float)
+    """
+    # Get the spherical filter
+    sphere = get_sphere(R, h)
+
+    # Filter the Snapshot object and return a spherical sub-region
+    sub = snap[sphere]
+
+    # Use the Family class to access the relevant fields
+    d = Family(sub, 'dm')
+    g = Family(sub, 'amr')
+    s = Family(sub, 'star')
+
+    # Get the total mass in Msol (checking if there's anything in the
+    # dset is handled in tot_mass)
+    m_d = tot_mass(d["mass"].flatten())  # Msol
+    m_g = tot_mass(g["mass"].flatten())  # Msol
+    m_s = tot_mass(s["mass"].flatten())  # Msol
+
+    # There might not be stars, so be a little more careful
+    # s_ds = s[["age", "mass"]].flatten()
+    # if (len(s_ds["age"]) > 0):
+    #     m_s = tot_mass(s_ds)  # Msol
+    # else:
+    #     m_s = 0.0
+
+    return [m_d, m_g, m_s]
+
+
 def tot_mass(flattened_dset):
     """Returns the total mass in flattened_dset in a vanilla numpy
     array.
@@ -62,15 +155,22 @@ def tot_mass(flattened_dset):
 
     :rtype: (float or ndarray) 
     """
-    # Get the total mass in the flattened dset in a SimArray
-    m = flattened_dset["mass"].in_units("Msol").sum().view(type=np.ndarray)
+    # Check if there's anything in this dset, useful for cases when no
+    # stars have formed
+    if len(flattened_dset['mass'] > 0):
     
-    # Sometimes if there is no mass, then this will return an array
-    # containing one value, so check for this
-    if type(m) == type(np.array(0.)):
-        print('---- found no mass')
-        m = float(m)
+        # Get the total mass in the flattened dset in a vanilla numpy
+        # array
+        m = flattened_dset["mass"].in_units("Msol").sum().view(type=np.ndarray)
     
+        # Sometimes if there is no mass, then this will return an array
+        # containing one value, so check for this
+        if type(m) == type(np.array(0.)):
+            print('---- found no mass')
+            m = float(m)
+    else:
+        m = 0.0
+        
     return m
 
         
@@ -98,91 +198,67 @@ def main(path, ioutput):
 
     snap.set_nproc(1)
     halos = subsnap.halos(finder='rockstar')
+
     nhalos = len(halos)
 
     halo_ix = None
     chunks = None
     
     if host:
-        halo_ix = halos.halo_ix(shuffle=True)[0:12]
+        halo_ix = halos.halo_ix(shuffle=True)
         chunks = np.array_split(halo_ix, size)
 
     halo_ixs = comm.scatter(chunks, root)
 
-
-    # hid = []
-    # Mvir_rs = []
-    # Rvir_rs = []
-    # M200c_rs = []
-    # R200c_rs = []
-    # Mvir_dm = []
-    # Mvir_gas = []
-    # Mvir_star = []
-    # M200c_dm = []
-    # M200c_gas = []
-    # M200c_star = []
-
+    # Field names for HDF5 datasets
     fields = ['halo_id', 'mvir_rs', 'rvir_rs', 'm200c_rs', 'r200c_rs',
-              'mvir_dm', 'mvir_gas', 'mvir_star']
+              'mvir_d', 'mvir_g', 'mvir_s', 'm200c_d', 'm200c_g', 'm200c_s']
+    # Field units for HDF5 dataset attributes
     units = ['', 'Msol', 'kpc (comoving)', 'Msol', 'kpc (comoving)',
-             'Msol', 'Msol', 'Msol']
-    nvar = 8
+             'Msol', 'Msol', 'Msol', 'Msol', 'Msol', 'Msol']
 
-    assert (nvar == len(fields)) and (len(fields) == len(units))
-    
+    assert (len(fields) == len(units))
+    nvar = len(fields)
+
+    # Local buffers for holding data
     data = np.zeros(shape=(len(halo_ixs), nvar))
     
     # Here i is the loop counter and ih is the halo index
-    for i, ih in enumerate(halo_ixs):
+    i = 0
+    for ih in halo_ixs:
+        # Current halo object
         h = halos[ih]
 
-        # The quantities returned by rockstar
-        t_Mvir_rs = h.properties['mvir']/subsnap.cosmo['h']  # Msol
-        t_Rvir_rs = h.properties['rvir']/subsnap.cosmo['h']  # a * kpc
+        # Quick check to make sure we're looking at interesting haloes
+        # (trust 1000 particle haloes for PM codes)
+        npart = len(h.d)
+        # print('-------- {0:d} halo particles'.format(npart))
+        if npart < 999: continue
 
-        # The quantities calculated at the virial radius calculated by rockstar
-        t_Mvir_gas = tot_mass(h.g["mass"].flatten())  # Msol
-        t_Mvir_dm = tot_mass(h.d["mass"].flatten())   # Msol
-        s_dset = h.s[["age", "mass"]].flatten()
-        if (len(s_dset["age"]) > 0):
-            t_Mvir_star = tot_mass(s_dset)  # Msol
-        else:
-            t_Mvir_star = 0.0
+        # Rockstar halo ID
+        data[i, 0] = h['id']
+        
+        # Virial quantities returned by rockstar
+        rvir = h.properties['rvir']/subsnap.cosmo['h']   # a * kpc
+        data[i, 1] = h.properties['mvir']/subsnap.cosmo['h']   # Msol
+        data[i, 2] = rvir
 
-        # The quantities calculated at R200c, as determined by the
-        # M200c returned by rockstar
-        t_M200c_rs = h.properties['m200c']/subsnap.cosmo['h']        # Msol
-        t_R200c_rs = M_to_R(t_M200c_rs, f=200, cosmo=subsnap.cosmo) \
+        # Quantities at 200*\rho_crit returned by rockstar
+        r200c = M_to_R(data[i, 3], f=200, cosmo=subsnap.cosmo) \
             / subsnap.cosmo['h']  # a * kpc
+        data[i, 3] = h.properties['m200c']/subsnap.cosmo['h']  # Msol
+        data[i, 4] = r200c
+        # Masses at the virial radius recalculated from the data
+        data[i, 5:8] = get_masses(snap, rvir, h)   # Msol
 
-        t_hid = h['id']
+        # Masses at the 200*\rho_crit radius recalculated from the data
+        data[i, 8:11] = get_masses(snap, r200c, h)  # Msol
 
-        # sto.idx = h["id"]
-        # # sto.result = {"M_tot" : M_tot, "R_vir" : R_vir.in_units('km'), "M_gas" : M_gas, \
-        # #                   "M_star" : s_dset["mass"].in_units("Msol").sum()}
+        i += 1
 
-        # sto.result = {'Mvir_rs': Mvir_rs, 'Rvir_rs': Rvir_rs,
-        #               'Mvir_dm': Mvir_dm, 'Mvir_gas': Mvir_gas, 
-        #               'Mvir_star': Mvir_star}
-
-        # hid.append(t_hid)
-        # Mvir_rs.append(t_Mvir_rs)
-        # Rvir_rs.append(t_Rvir_rs)
-        # M200c_rs.append(t_M200c_rs)
-        # R200c_rs.append(t_R200c_rs)
-        # Mvir_dm.append(t_Mvir_dm)
-        # Mvir_gas.append(t_Mvir_gas)
-        # Mvir_star.append(t_Mvir_star)
-
-        data[i, 0] = t_hid
-        data[i, 1] = t_Mvir_rs
-        data[i, 2] = t_Rvir_rs
-        data[i, 3] = t_M200c_rs
-        data[i, 4] = t_R200c_rs
-        data[i, 5] = t_Mvir_dm
-        data[i, 6] = t_Mvir_gas
-        data[i, 7] = t_Mvir_star
-
+    # Trim down the local data array
+    data = data[0:i, :]
+    
     # Gather all of the local array sizes
     # data_shape = data.shape
     # data_ravel = data.ravel()
@@ -213,15 +289,15 @@ def main(path, ioutput):
         databuf = np.reshape(databuf, (nrows, ncols))
         fn = os.path.join(path, 'out_{0:d}.h5'.format(ioutput))
 
-        # Mvir_rs = comm.gather(Mvir_rs, root=0)
-        # Rvir_rs = comm.gather(Rvir_rs, root=0)
-        # M200c_rs = comm.gather(M200c_rs, root=0)
-        # R200c_rs = comm.gather(R200c_rs, root=0)
-        # Mvir_dm = comm.gather(Mvir_dm, root=0)
-        # Mvir_gas = comm.gather(Mvir_gas, root=0)
-        # Mvir_star = comm.gather(Mvir_star, root=0)
-
+        print('-------- kept {0:d} haloes'.format(nrows))
+        
         with h5py.File(fn, 'w') as f:
+            # Store cosmological parameters
+            g = f.create_group('cosmo')
+            for key in snap.cosmo:
+                g.create_dataset(key, data=snap.cosmo[key])
+
+            # Store actual results
             g = f.create_group('results')
             for i in range(nvar):
                 d = g.create_dataset(fields[i], data=databuf[:, i])
