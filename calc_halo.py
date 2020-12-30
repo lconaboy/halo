@@ -2,9 +2,10 @@ from __future__ import print_function
 
 import seren3
 import numpy as np
-from seren3.array import SimArray
+# from seren3.array import SimArray
 from seren3.core.snapshot import Family
 from pymses.utils.regions import Sphere
+
 
 def M_to_R(m, f, cosmo):
     """Converts from a halo mass defined as f wrt the critical density
@@ -26,9 +27,8 @@ def M_to_R(m, f, cosmo):
     from cosmolopy.distance import e_z
     from cosmolopy.density import cosmo_densities, omega_M_z
 
-
-    assert(f == 'vir' or (type(f) == type(1.) or
-           type(f) == type(1))), "f should be 'vir' or number"
+    assert(f == 'vir' or (isinstance(f, int) or isinstance(f, float))), \
+        "f should be 'vir' or number"
 
     # rho_crit(0) = 3 * H0**2 / 8 * \pi * G
     # H(z) = H0 * E(z)
@@ -40,11 +40,12 @@ def M_to_R(m, f, cosmo):
     omega_m_z = omega_M_z(**cosmo)
     
     if f == 'vir':
-        X = 18*np.pi**2 + 82.*(omega_m_z - 1.) - 39*(omega_m_z - 1.)**2
+        X = 18 * np.pi**2 + (82. * (omega_m_z - 1.)) \
+            - (39 * (omega_m_z - 1.)**2)
     else:
         X = float(f)
 
-    r = ((3. * m)/(4. * np.pi * X * rho_crit_z)) ** (1./3.)  # Mpc
+    r = ((3. * m) / (4. * np.pi * X * rho_crit_z)) ** (1. / 3.)  # Mpc
     r = r * 1e3 * cosmo['h'] / cosmo['aexp']  # a kpc h**-1
     
     return r
@@ -222,7 +223,7 @@ def main(path, ioutput):
 
     # Local buffers for holding data
     data = np.zeros(shape=(len(halo_ixs), nvar))
-    
+
     # Here i is the loop counter and ih is the halo index
     i = 0
     for ih in halo_ixs:
@@ -233,20 +234,22 @@ def main(path, ioutput):
         # (trust 1000 particle haloes for PM codes)
         npart = len(h.d)
         # print('-------- {0:d} halo particles'.format(npart))
-        if npart < 999: continue
+        if npart < 999:
+            continue
 
         # Rockstar halo ID
         data[i, 0] = h['id']
-        
+
         # Virial quantities returned by rockstar
         rvir = h.properties['rvir']/subsnap.cosmo['h']   # a * kpc
         data[i, 1] = h.properties['mvir']/subsnap.cosmo['h']   # Msol
         data[i, 2] = rvir
 
         # Quantities at 200*\rho_crit returned by rockstar
-        r200c = M_to_R(data[i, 3], f=200, cosmo=subsnap.cosmo) \
+        m200c = h.properties['m200c']/subsnap.cosmo['h']  # Msol
+        data[i, 3] = m200c
+        r200c = M_to_R(m200c, f=200, cosmo=subsnap.cosmo) \
             / subsnap.cosmo['h']  # a * kpc
-        data[i, 3] = h.properties['m200c']/subsnap.cosmo['h']  # Msol
         data[i, 4] = r200c
         # Masses at the virial radius recalculated from the data
         data[i, 5:8] = get_masses(snap, rvir, h)   # Msol
